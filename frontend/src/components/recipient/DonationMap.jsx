@@ -1,16 +1,20 @@
-import { useState, useEffect } from "react";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import { donationAPI } from "../../services/api";
 import { Link } from "react-router-dom";
 import L from "leaflet";
+import { Box } from "@mui/material";
 import "leaflet/dist/leaflet.css";
 
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-});
+// Fix for Leaflet default icons
+if (typeof window !== 'undefined') {
+  delete L.Icon.Default.prototype._getIconUrl;
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+    iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+  });
+}
 
 const availableFoodIcon = new L.Icon({
   iconUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjUiIGhlaWdodD0iNDEiIHZpZXdCb3g9IjAgMCAyNSA0MSIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyLjUgNDFDMTkuNDA0IDQxIDI1IDMxLjgyNzkgMjUgMjAuNUMyNSA5LjE3MjEgMTkuNDA0IDAgMTIuNSAwQzUuNTk1OTcgMCAwIDkuMTcyMSAwIDIwLjVDMCAzMS44Mjc5IDUuNTk1OTcgNDEgMTIuNSA0MVoiIGZpbGw9IiMxMEE4NTgiLz4KPHBhdGggZD0iTTEyLjUgMzZDMjEuMDU1OSAzNiAyOCAyOC4wNTU5IDI4IDE5LjVDMjggMTAuOTQ0MSAyMS4wNTU5IDQgMTIuNSA0QzMuOTQ0MDYgNCAwIDEwLjk0NDEgMCAxOS41QzAgMjguMDU1OSAzLjk0NDA2IDM2IDEyLjUgMzZaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBkPSJNMTYuNSAxNS41QzE2LjUgMTcuMTU2OSAxNC42NTY5IDE5IDEzIDE5QzExLjM0MzEgMTkgOS41IDE3LjE1NjkgOS41IDE1LjVDOS41IDEzLjg0MzEgMTEuMzQzMSAxMiAxMyAxMkMxNC42NTY5IDEyIDE2LjUgMTMuODQzMSAxNi41IDE1LjVaIiBmaWxsPSIjMTBBODU4Ii8+CjxwYXRoIGQ9Ik0xMCAyMkMxMCAyMiAxMiAyNSAxMyAyNUMxNCAyNSAxNiAyMiAxNiAyMkMxNiAyMiAxOCAyNCAxOCAyNkMxOCAyOCAxNi41IDMwIDEzIDMwQzkuNSAzMCA4IDI4IDggMjZDOCAyNCAxMCAyMiAxMCAyMloiIGZpbGw9IiMxMEE4NTgiLz4KPC9zdmc+',
@@ -44,14 +48,45 @@ const claimedFoodIcon = new L.Icon({
   shadowSize: [41, 41]
 });
 
+// Component to handle map updates
+function MapUpdater({ center, zoom }) {
+  const map = useMap();
+  
+  useEffect(() => {
+    if (center && center[0] && center[1]) {
+      map.setView(center, zoom);
+    }
+  }, [center, zoom, map]);
+  
+  return null;
+}
+
+// Component to handle map resize
+function MapResizer() {
+  const map = useMap();
+  
+  useEffect(() => {
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 100);
+  }, [map]);
+  
+  return null;
+}
+
 export default function DonationMap() {
   const [donations, setDonations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [userLocation, setUserLocation] = useState(null);
   const [geocodingProgress, setGeocodingProgress] = useState(0);
+  const [geocodingBuffer, setGeocodingBuffer] = useState(0);
   const [mapHeight, setMapHeight] = useState("400px");
-  const defaultCenter = [28.6139, 77.2090]; 
+  const [mapKey, setMapKey] = useState(Date.now()); // Key to force map re-render
+  const mapRef = useRef(null);
+  
+  const defaultCenter = [28.6139, 77.2090];
+  const defaultZoom = 12;
 
   // Update map height based on screen size
   useEffect(() => {
@@ -63,6 +98,13 @@ export default function DonationMap() {
       } else {
         setMapHeight("550px");
       }
+      
+      // Force map resize
+      if (mapRef.current) {
+        setTimeout(() => {
+          mapRef.current?.invalidateSize();
+        }, 300);
+      }
     };
 
     updateMapHeight();
@@ -71,23 +113,23 @@ export default function DonationMap() {
     return () => window.removeEventListener('resize', updateMapHeight);
   }, []);
 
-  const isDonationExpired = (donation) => {
+  const isDonationExpired = useCallback((donation) => {
     if (!donation.expiryDate) return false;
     
     const expiryDate = new Date(donation.expiryDate);
     const now = new Date();
   
     return expiryDate < now;
-  };
+  }, []);
 
-  const getActualStatus = (donation) => {
+  const getActualStatus = useCallback((donation) => {
     if (isDonationExpired(donation)) {
       return 'expired';
     }
     return donation.status;
-  };
+  }, [isDonationExpired]);
 
-  const getDonationIcon = (donation) => {
+  const getDonationIcon = useCallback((donation) => {
     const actualStatus = getActualStatus(donation);
     
     switch (actualStatus) {
@@ -102,9 +144,9 @@ export default function DonationMap() {
       default:
         return availableFoodIcon;
     }
-  };
+  }, [getActualStatus]);
 
-  const getStatusColor = (donation) => {
+  const getStatusColor = useCallback((donation) => {
     const actualStatus = getActualStatus(donation);
     
     switch (actualStatus) {
@@ -114,7 +156,7 @@ export default function DonationMap() {
       case 'claimed': return 'text-blue-600';
       default: return 'text-gray-600';
     }
-  };
+  }, [getActualStatus]);
 
   useEffect(() => {
     fetchDonations();
@@ -131,9 +173,9 @@ export default function DonationMap() {
         const availableDonations = response.data.filter(donation => 
           donation.status === 'available' || donation.status === 'reserved'
         );
-        console.log("Available donations:", availableDonations);
         const donationsWithCoords = await geocodeAllDonations(availableDonations);
         setDonations(donationsWithCoords);
+        setMapKey(Date.now()); // Force map re-render
       }
     } catch (err) {
       console.error("Error fetching donations:", err);
@@ -147,14 +189,20 @@ export default function DonationMap() {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          setUserLocation([
+          const newLocation = [
             position.coords.latitude,
             position.coords.longitude
-          ]);
+          ];
+          setUserLocation(newLocation);
         },
         (error) => {
           console.log("Geolocation error:", error);
           setUserLocation(defaultCenter);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
         }
       );
     } else {
@@ -164,7 +212,16 @@ export default function DonationMap() {
 
   const geocodeAllDonations = async (donations) => {
     setGeocodingProgress(0);
+    setGeocodingBuffer(0);
     const results = [];
+    
+    if (donations.length === 0) {
+      setGeocodingProgress(100);
+      setGeocodingBuffer(100);
+      return results;
+    }
+    
+    setGeocodingBuffer(10);
     
     for (let i = 0; i < donations.length; i++) {
       const donation = donations[i];
@@ -176,6 +233,13 @@ export default function DonationMap() {
           originalAddress: donation.pickupLocation,
           actualStatus: getActualStatus(donation) 
         });
+        
+        const progress = Math.round(((i + 1) / donations.length) * 100);
+        setGeocodingProgress(progress);
+        setGeocodingBuffer(Math.min(progress + 10, 100));
+        
+        // Small delay to prevent API rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
         console.warn(`Failed to geocode: ${donation.pickupLocation}`, error);
         results.push({
@@ -188,35 +252,62 @@ export default function DonationMap() {
           geocodeFailed: true,
           actualStatus: getActualStatus(donation) 
         });
+        
+        const progress = Math.round(((i + 1) / donations.length) * 100);
+        setGeocodingProgress(progress);
+        setGeocodingBuffer(Math.min(progress + 10, 100));
       }
-      setGeocodingProgress(Math.round(((i + 1) / donations.length) * 100));
     }
     
     setGeocodingProgress(100);
+    setGeocodingBuffer(100);
     return results;
   };
 
   const geocodeLocation = async (address) => {
-    if (address.coordinates && Array.isArray(address.coordinates) && address.coordinates.length === 2) {
-      return address.coordinates;
+    if (!address) {
+      return defaultCenter;
     }
-    if (address.latitude && address.longitude) {
-      return [address.latitude, address.longitude];
+    
+    // Check for direct coordinates
+    if (typeof address === 'object') {
+      if (address.coordinates && Array.isArray(address.coordinates) && address.coordinates.length === 2) {
+        return address.coordinates;
+      }
+      if (address.latitude && address.longitude) {
+        return [address.latitude, address.longitude];
+      }
+      if (address.address) {
+        return geocodeLocation(address.address);
+      }
     }
+    
     if (typeof address === 'string') {
       const formattedAddress = encodeURIComponent(address.trim());
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${formattedAddress}&limit=1`
-      );
       
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.length > 0) {
-          return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${formattedAddress}&limit=1&countrycodes=in`,
+          {
+            headers: {
+              'User-Agent': 'FoodDonationApp/1.0'
+            }
+          }
+        );
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.length > 0) {
+            return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+          }
         }
+      } catch (error) {
+        console.warn("Geocoding API error:", error);
       }
+      
       return geocodeFallback(address);
     }
+    
     return defaultCenter;
   };
 
@@ -244,18 +335,15 @@ export default function DonationMap() {
       'patna': [25.5941, 85.1376],
     };
 
+    if (!address) return defaultCenter;
+    
     const lowerAddress = address.toLowerCase();
     for (const [key, coords] of Object.entries(locationMap)) {
       if (lowerAddress === key || lowerAddress.includes(key)) {
         return coords;
       }
     }
-    for (const [key, coords] of Object.entries(locationMap)) {
-      if (lowerAddress.includes(key)) {
-        return coords;
-      }
-    }
-    console.warn(`No geocoding match found for: ${address}`);
+    
     return [
       defaultCenter[0] + (Math.random() - 0.5) * 0.1,
       defaultCenter[1] + (Math.random() - 0.5) * 0.1
@@ -287,17 +375,73 @@ export default function DonationMap() {
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600 mx-auto"></div>
             <p className="mt-4 text-gray-600">Loading donation map...</p>
             {geocodingProgress > 0 && (
-              <div className="mt-4 max-w-md mx-auto">
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div 
-                    className="bg-emerald-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${geocodingProgress}%` }}
-                  ></div>
-                </div>
+              <Box className="mt-4 max-w-md mx-auto">
+                <Box
+                  sx={{
+                    position: 'relative',
+                    height: '12px',
+                    backgroundColor: 'rgba(209, 213, 219, 0.5)',
+                    borderRadius: '8px',
+                    overflow: 'hidden',
+                    width: '100%',
+                  }}
+                >
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      backgroundImage: 'linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent)',
+                      backgroundSize: '40px 40px',
+                    }}
+                  />
+                  
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      height: '100%',
+                      width: `${geocodingProgress}%`,
+                      backgroundColor: '#059669',
+                      transition: 'width 0.3s ease-in-out',
+                      borderRadius: '8px',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        backgroundImage: 'linear-gradient(45deg, rgba(255, 255, 255, 0.3) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.3) 50%, rgba(255, 255, 255, 0.3) 75%, transparent 75%, transparent)',
+                        backgroundSize: '40px 40px',
+                        borderRadius: '8px',
+                      }}
+                    />
+                  </Box>
+                  
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      height: '100%',
+                      width: `${geocodingBuffer}%`,
+                      backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                      transition: 'width 0.3s ease-in-out',
+                      borderRadius: '8px',
+                    }}
+                  />
+                </Box>
+                
                 <p className="text-sm text-gray-600 mt-2">
                   Geocoding locations... {geocodingProgress}%
                 </p>
-              </div>
+              </Box>
             )}
           </div>
         </div>
@@ -374,16 +518,27 @@ export default function DonationMap() {
           <div style={{ height: mapHeight }} className="w-full relative">
             {userLocation && (
               <MapContainer
+                key={mapKey} // Force re-render when key changes
                 center={userLocation}
-                zoom={12}
+                zoom={defaultZoom}
                 style={{ height: '100%', width: '100%' }}
                 scrollWheelZoom={true}
                 className="rounded-xl sm:rounded-2xl"
+                ref={mapRef}
+                whenCreated={(mapInstance) => {
+                  mapRef.current = mapInstance;
+                  setTimeout(() => {
+                    mapInstance.invalidateSize();
+                  }, 100);
+                }}
               >
                 <TileLayer
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
+                <MapUpdater center={userLocation} zoom={defaultZoom} />
+                <MapResizer />
+                
                 <Marker position={userLocation}>
                   <Popup>
                     <div className="text-center">
@@ -392,82 +547,86 @@ export default function DonationMap() {
                     </div>
                   </Popup>
                 </Marker>
+                
                 {donations.map((donation, index) => (
-                  <Marker
-                    key={donation._id || index}
-                    position={donation.coordinates}
-                    icon={getDonationIcon(donation)}
-                  >
-                    <Popup>
-                      <div className="min-w-[200px] sm:min-w-[250px]">
-                        <h3 className="font-bold text-gray-900 text-base sm:text-lg mb-2">
-                          {donation.foodType}
-                        </h3>
-                        
-                        <div className="space-y-2 text-xs sm:text-sm">
-                          <div className="flex justify-between">
-                            <span className="text-gray-600">Quantity:</span>
-                            <span className="font-semibold">{donation.quantity}</span>
-                          </div>
+                  donation.coordinates && Array.isArray(donation.coordinates) && 
+                  donation.coordinates.length === 2 && (
+                    <Marker
+                      key={donation._id || index}
+                      position={donation.coordinates}
+                      icon={getDonationIcon(donation)}
+                    >
+                      <Popup>
+                        <div className="min-w-[200px] sm:min-w-[250px]">
+                          <h3 className="font-bold text-gray-900 text-base sm:text-lg mb-2">
+                            {donation.foodType || 'Food Donation'}
+                          </h3>
                           
-                          <div className="flex justify-between">
-                            <span className="text-gray-600">Status:</span>
-                            <span className={`font-semibold ${getStatusColor(donation)}`}>
-                              {getActualStatus(donation).charAt(0).toUpperCase() + getActualStatus(donation).slice(1)}
-                            </span>
-                          </div>
-
-                          {donation.expiryDate && (
+                          <div className="space-y-2 text-xs sm:text-sm">
                             <div className="flex justify-between">
-                              <span className="text-gray-600">Expires:</span>
-                              <span className={`font-semibold ${isDonationExpired(donation) ? 'text-red-600' : ''}`}>
-                                {new Date(donation.expiryDate).toLocaleDateString()}
-                                {isDonationExpired(donation) && ' (Expired)'}
+                              <span className="text-gray-600">Quantity:</span>
+                              <span className="font-semibold">{donation.quantity || 'N/A'}</span>
+                            </div>
+                            
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Status:</span>
+                              <span className={`font-semibold ${getStatusColor(donation)}`}>
+                                {getActualStatus(donation).charAt(0).toUpperCase() + getActualStatus(donation).slice(1)}
                               </span>
                             </div>
-                          )}
 
-                          <div>
-                            <span className="text-gray-600 block mb-1">Pickup Location:</span>
-                            <span className="font-medium text-xs sm:text-sm">
-                              {donation.originalAddress || donation.pickupLocation}
-                            </span>
-                            {donation.geocodeFailed && (
-                              <p className="text-xs text-yellow-600 mt-1">
-                                * Approximate location
-                              </p>
+                            {donation.expiryDate && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">Expires:</span>
+                                <span className={`font-semibold ${isDonationExpired(donation) ? 'text-red-600' : ''}`}>
+                                  {new Date(donation.expiryDate).toLocaleDateString()}
+                                  {isDonationExpired(donation) && ' (Expired)'}
+                                </span>
+                              </div>
+                            )}
+
+                            <div>
+                              <span className="text-gray-600 block mb-1">Pickup Location:</span>
+                              <span className="font-medium text-xs sm:text-sm">
+                                {donation.originalAddress || donation.pickupLocation || 'Location not specified'}
+                              </span>
+                              {donation.geocodeFailed && (
+                                <p className="text-xs text-yellow-600 mt-1">
+                                  * Approximate location
+                                </p>
+                              )}
+                            </div>
+
+                            {donation.description && (
+                              <div>
+                                <span className="text-gray-600 block mb-1">Description:</span>
+                                <span className="text-xs sm:text-sm">{donation.description}</span>
+                              </div>
                             )}
                           </div>
 
-                          {donation.description && (
-                            <div>
-                              <span className="text-gray-600 block mb-1">Description:</span>
-                              <span className="text-xs sm:text-sm">{donation.description}</span>
+                          {getActualStatus(donation) === 'available' && (
+                            <div className="mt-3 sm:mt-4">
+                              <Link
+                                to={`/recipient/food-listings/${donation._id}`}
+                                className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-2 px-3 sm:px-4 rounded-lg font-semibold transition-colors duration-200 text-xs sm:text-sm block text-center"
+                              >
+                                View Details & Claim
+                              </Link>
+                            </div>
+                          )}
+
+                          {getActualStatus(donation) === 'expired' && (
+                            <div className="mt-3 sm:mt-4 p-2 bg-red-50 border border-red-200 rounded-lg">
+                              <p className="text-red-700 text-xs sm:text-sm text-center font-medium">
+                                This donation has expired
+                              </p>
                             </div>
                           )}
                         </div>
-
-                        {getActualStatus(donation) === 'available' && (
-                          <div className="mt-3 sm:mt-4">
-                            <Link
-                              to={`/recipient/food-listings/${donation._id}`}
-                              className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-2 px-3 sm:px-4 rounded-lg font-semibold transition-colors duration-200 text-xs sm:text-sm block text-center"
-                            >
-                              View Details & Claim
-                            </Link>
-                          </div>
-                        )}
-
-                        {getActualStatus(donation) === 'expired' && (
-                          <div className="mt-3 sm:mt-4 p-2 bg-red-50 border border-red-200 rounded-lg">
-                            <p className="text-red-700 text-xs sm:text-sm text-center font-medium">
-                              This donation has expired
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    </Popup>
-                  </Marker>
+                      </Popup>
+                    </Marker>
+                  )
                 ))}
               </MapContainer>
             )}
@@ -475,7 +634,8 @@ export default function DonationMap() {
         </div>
 
         {/* Legend */}
-        <div className="mt-4 sm:mt-6 bg-white/80 backdrop-blur-sm rounded-xl sm:rounded-2xl shadow-sm border border-gray-200/60 p-4 mx-2">
+               {/* Legend */}
+               <div className="mt-4 sm:mt-6 bg-white/80 backdrop-blur-sm rounded-xl sm:rounded-2xl shadow-sm border border-gray-200/60 p-4 mx-2">
           <h3 className="font-semibold text-gray-900 mb-3 text-sm sm:text-base">Map Legend</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs sm:text-sm">
             <div className="flex items-center gap-2">
